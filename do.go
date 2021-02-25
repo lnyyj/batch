@@ -9,10 +9,38 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type BDoOption func(*BDoOptions)
+type BDoCallback func([]interface{}) error
+
+// BDoOptions 参数配置
+type BDoOptions struct {
+	Count   int           // 计数提交
+	Timeout time.Duration // 超时提交
+	CB      BDoCallback   // 提交时执行的回调函数
+}
+
+func WhithCount(c int) BDoOption {
+	return func(o *BDoOptions) {
+		o.Count = c
+	}
+}
+func WhithTimeout(timeout time.Duration) BDoOption {
+	return func(o *BDoOptions) {
+		o.Timeout = timeout
+	}
+}
+
+func WhithCallback(cb BDoCallback) BDoOption {
+	return func(o *BDoOptions) {
+		o.CB = cb
+	}
+}
+
 // BDo ...
 type BDo struct {
-	MaxCount, MaxTimeInv int // 计数提交/超时提交
-	CB                   func(dos []interface{}) error
+	cb      func(dos []interface{}) error
+	count   int           // 计数提交
+	timeout time.Duration // 每次提交的超时时间
 
 	dos    []interface{}
 	chdos  chan []interface{}
@@ -21,23 +49,26 @@ type BDo struct {
 	closed int32
 }
 
-// NewDo ...
-func NewDo(args ...int) *BDo {
-	bdo := &BDo{MaxCount: 1024, MaxTimeInv: 15}
-	if len(args) == 2 {
-		bdo.MaxCount, bdo.MaxTimeInv = args[0], args[1]
+var defaultBDoOptions = &BDoOptions{Count: 1024, Timeout: 15}
+
+// NewBDo ...
+func NewBDo(ops ...BDoOption) *BDo {
+	_ops := defaultBDoOptions
+	for _, opFunc := range ops {
+		opFunc(_ops)
 	}
-	bdo.dos = make([]interface{}, 0, bdo.MaxCount/2)
+	bdo := &BDo{
+		count:   _ops.Count,
+		timeout: _ops.Timeout,
+		cb:      _ops.CB,
+	}
+	bdo.dos = make([]interface{}, 0, bdo.count/2)
 	bdo.chdos = make(chan []interface{}, 10)
 
 	go bdo.do()
 	return bdo
 }
 
-func (b *BDo) Callback(cb func(dos []interface{}) error) *BDo {
-	b.CB = cb
-	return b
-}
 func (b *BDo) Erorr() (errs <-chan error) {
 	b.errs = make(chan error)
 	return b.errs
@@ -46,7 +77,7 @@ func (b *BDo) Erorr() (errs <-chan error) {
 func (b *BDo) Add(v interface{}, flush ...bool) error {
 	if b.IsDone() {
 		return errors.New("is closed")
-	}else if count := len(b.dos); count >= b.MaxCount || len(flush)>0{
+	} else if count := len(b.dos); count >= b.count || len(flush) > 0 {
 		b.flush()
 	}
 	b.lock.Lock()
@@ -72,21 +103,21 @@ func (b *BDo) flush() {
 	defer b.lock.Unlock()
 	if l := len(b.dos); l > 0 {
 		b.chdos <- b.dos
-		b.dos = make([]interface{}, 0, b.MaxCount/2)
+		b.dos = make([]interface{}, 0, b.count/2)
 	}
 }
 
 func (b *BDo) do() {
 	for {
 		select {
-		case <-time.After(time.Duration(b.MaxTimeInv) * time.Second):
+		case <-time.After(b.timeout):
 			if !b.IsDone() {
 				b.flush()
 			}
 
 		case dos := <-b.chdos:
-			if b.CB != nil {
-				if err := b.CB(dos); err != nil {
+			if b.cb != nil {
+				if err := b.cb(dos); err != nil {
 					if b.errs != nil {
 						b.errs <- err
 					} else {
