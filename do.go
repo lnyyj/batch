@@ -97,7 +97,7 @@ func (b *BDo) FlushAfterAdd(v ...interface{}) error {
 		b.flush(KindTiggerEventTypeForce)
 	}
 	b.lock.Lock()
-	b.dos.source = append(b.dos.source, v)
+	b.dos.source = append(b.dos.source, v...)
 	b.lock.Unlock()
 
 	return nil
@@ -110,7 +110,7 @@ func (b *BDo) Add(v ...interface{}) error {
 		b.flush(KindTiggerEventTypeCount)
 	}
 	b.lock.Lock()
-	b.dos.source = append(b.dos.source, v)
+	b.dos.source = append(b.dos.source, v...)
 	b.lock.Unlock()
 
 	return nil
