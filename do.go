@@ -88,13 +88,26 @@ func (b *BDo) Erorr() (errs <-chan error) {
 	return b.errs
 }
 
-func (b *BDo) Add(v interface{}, flush ...bool) error {
+func (b *BDo) FlushAfterAdd(v ...interface{}) error {
 	if b.IsDone() {
 		return errors.New("is closed")
 	} else if count := len(b.dos.source); count >= b.count {
 		b.flush(KindTiggerEventTypeCount)
-	} else if len(flush) > 0 {
+	} else {
 		b.flush(KindTiggerEventTypeForce)
+	}
+	b.lock.Lock()
+	b.dos.source = append(b.dos.source, v)
+	b.lock.Unlock()
+
+	return nil
+}
+
+func (b *BDo) Add(v ...interface{}) error {
+	if b.IsDone() {
+		return errors.New("is closed")
+	} else if count := len(b.dos.source); count >= b.count {
+		b.flush(KindTiggerEventTypeCount)
 	}
 	b.lock.Lock()
 	b.dos.source = append(b.dos.source, v)
