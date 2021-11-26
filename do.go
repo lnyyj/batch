@@ -9,8 +9,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type KindTiggerEventType int
+
+const (
+	KindTiggerEventTypeTime  KindTiggerEventType = 1
+	KindTiggerEventTypeCount KindTiggerEventType = 2
+	KindTiggerEventTypeForce KindTiggerEventType = 3
+	KindTiggerEventTypeClose KindTiggerEventType = 10
+)
+
 type BDoOption func(*BDoOptions)
-type BDoCallback func([]interface{}) error
+type BDoCallback func([]interface{}, KindTiggerEventType) error
 
 // BDoOptions 参数配置
 type BDoOptions struct {
@@ -38,18 +47,23 @@ func WhithCallback(cb BDoCallback) BDoOption {
 
 // BDo ...
 type BDo struct {
-	cb      func(dos []interface{}) error
+	cb      func(dos []interface{}, doType KindTiggerEventType) error
 	count   int           // 计数提交
 	timeout time.Duration // 每次提交的超时时间
 
-	dos    []interface{}
-	chdos  chan []interface{}
+	dos    event
+	chdos  chan event
 	lock   sync.Mutex
 	errs   chan error
 	closed int32
 }
 
-var defaultBDoOptions = &BDoOptions{Count: 1024, Timeout: 15}
+type event struct {
+	source    []interface{}
+	eventType KindTiggerEventType
+}
+
+var defaultBDoOptions = &BDoOptions{Count: 1024, Timeout: 15 * time.Second}
 
 // NewBDo ...
 func NewBDo(ops ...BDoOption) *BDo {
@@ -62,8 +76,8 @@ func NewBDo(ops ...BDoOption) *BDo {
 		timeout: _ops.Timeout,
 		cb:      _ops.CB,
 	}
-	bdo.dos = make([]interface{}, 0, bdo.count/2)
-	bdo.chdos = make(chan []interface{}, 10)
+	bdo.dos.source = make([]interface{}, 0, bdo.count/2)
+	bdo.chdos = make(chan event, 128)
 
 	go bdo.do()
 	return bdo
@@ -77,11 +91,13 @@ func (b *BDo) Erorr() (errs <-chan error) {
 func (b *BDo) Add(v interface{}, flush ...bool) error {
 	if b.IsDone() {
 		return errors.New("is closed")
-	} else if count := len(b.dos); count >= b.count || len(flush) > 0 {
-		b.flush()
+	} else if count := len(b.dos.source); count >= b.count {
+		b.flush(KindTiggerEventTypeCount)
+	} else if len(flush) > 0 {
+		b.flush(KindTiggerEventTypeForce)
 	}
 	b.lock.Lock()
-	b.dos = append(b.dos, v)
+	b.dos.source = append(b.dos.source, v)
 	b.lock.Unlock()
 
 	return nil
@@ -94,30 +110,33 @@ func (b *BDo) IsDone() bool {
 func (b *BDo) Done() {
 	if !b.IsDone() {
 		atomic.SwapInt32(&b.closed, 1)
-		b.flush()
+		b.flush(KindTiggerEventTypeClose)
 	}
 }
 
-func (b *BDo) flush() {
+func (b *BDo) flush(eventType KindTiggerEventType) {
 	b.lock.Lock()
 	defer b.lock.Unlock()
-	if l := len(b.dos); l > 0 {
+	if l := len(b.dos.source); l > 0 {
+		b.dos.eventType = eventType
 		b.chdos <- b.dos
-		b.dos = make([]interface{}, 0, b.count/2)
+		b.dos.source = make([]interface{}, 0, b.count/2)
 	}
 }
 
 func (b *BDo) do() {
+	tc := time.NewTicker(b.timeout)
+	defer tc.Stop()
 	for {
 		select {
-		case <-time.After(b.timeout):
+		case <-tc.C:
 			if !b.IsDone() {
-				b.flush()
+				b.flush(KindTiggerEventTypeTime)
 			}
 
 		case dos := <-b.chdos:
 			if b.cb != nil {
-				if err := b.cb(dos); err != nil {
+				if err := b.cb(dos.source, dos.eventType); err != nil {
 					if b.errs != nil {
 						b.errs <- err
 					} else {
